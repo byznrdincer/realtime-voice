@@ -1,0 +1,43 @@
+ source /Users/beyzanurdincer/projects/voice-sidekick/venv/bin/activate
+services:
+  whisper:
+    build:
+      context: ./whisper
+    container_name: voice-sidekick-whisper
+    ports:
+      - "8002:8002"
+    volumes:
+      - whisper-cache:/root/.cache/whisper
+    restart: unless-stopped
+
+  chatterbox:
+    build:
+      context: ./chatterbox
+    container_name: voice-sidekick-chatterbox
+    ports:
+      - "8001:8001"
+    volumes:
+      - chatterbox-cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+  personal-sidekick:
+    build:
+      context: ./personal-sidekick
+    container_name: voice-sidekick-app
+    ports:
+      - "7860:7860"
+      - "7861:7861"
+"
+7862:7862"
+    env_file:
+      - ./personal-sidekick/.env    environment:
+      - WHISPER_URL=http://whisper:8002
+      - CHATTERBOX_URL=http://chatterbox:8001
+    depends_on:
+      - whisper
+      - chatterbox
+    restart: unless-stopped
+
+volumes:
+  whisper-cache:
+  chatterbox-cache:

@@ -1,0 +1,50 @@
+# macOS
+.DS_Store
+
+# Ortam değişkenleri
+.env
+.env.*
+!.env.example
+
+# Python
+**/venv/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Model ve checkpoint dosyaları
+**/*.safetensors
+**/*.ckpt
+**/*.pt
+**/*.pth
+**/*.bin
+**/*.onnx
+**/checkpoints/
+**/model-cache/
+**/.cache/
+**/huggingface/
+
+# Üretilen sesler ve referans sesler
+**/*.wav
+**/*.mp3
+**/*.m4a
+**/*.flac
+**/outputs/
+**/output/
+**/generated/
+
+# Geçici dosyalar
+**/tmp/
+**/temp/
+**/*.log
+
+# IDE
+.vscode/
+.idea/
+
+**/.playwright-mcp/
+dump.rdb
+VoxCPM2-full/

@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
+
+# Test/cache
+.pytest_cache/
+.mypy_cache/
+
+# Model cache
+hf_cache/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temporary files
+*.tmp
+*.swp
