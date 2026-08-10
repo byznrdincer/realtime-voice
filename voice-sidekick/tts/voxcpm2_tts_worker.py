@@ -7,6 +7,7 @@ from queue_service.redis_client import (
     text_redis,
     audio_redis,
     TEXT_QUEUE,
+    PLAYBACK_BUFFER_SECONDS_KEY,
 )
 
 from tts.tts_normalizer import normalize_tts_text
@@ -16,6 +17,55 @@ URL = "http://127.0.0.1:8031/tts/stream"
 VOXCPM2_AUDIO_QUEUE = "voxcpm2_audio_queue"
 SAMPLE_RATE = 48000
 NETWORK_CHUNK_BYTES = 15360
+
+MAX_BUFFER_SECONDS = 8.0
+RESUME_BUFFER_SECONDS = 4.0
+
+
+def wait_for_playback_headroom():
+
+    waiting = False
+
+    while True:
+        try:
+            raw = audio_redis.get(
+                PLAYBACK_BUFFER_SECONDS_KEY
+            )
+
+            buffered_seconds = (
+                float(raw)
+                if raw is not None
+                else 0.0
+            )
+
+        except redis.exceptions.RedisError as error:
+            print(
+                "[REDIS ERROR] buffer check:",
+                error,
+            )
+            time.sleep(1)
+            continue
+
+        if not waiting:
+            if buffered_seconds <= MAX_BUFFER_SECONDS:
+                return
+
+            waiting = True
+
+            print(
+                f"[BACKPRESSURE] "
+                f"buffer={buffered_seconds:.2f}s "
+                f"| üretim bekletiliyor"
+            )
+
+        if buffered_seconds <= RESUME_BUFFER_SECONDS:
+            print(
+                f"[BACKPRESSURE RELEASE] "
+                f"buffer={buffered_seconds:.2f}s"
+            )
+            return
+
+        time.sleep(0.1)
 
 
 def main():
@@ -36,6 +86,8 @@ def main():
             continue
 
         _, text = result
+
+        wait_for_playback_headroom()
 
         print(
             f"\n[VOXCPM2 START] "

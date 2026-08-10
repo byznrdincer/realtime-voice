@@ -1,8 +1,12 @@
+import threading
 import time
 
 import redis
 
-from queue_service.redis_client import audio_redis
+from queue_service.redis_client import (
+    audio_redis,
+    PLAYBACK_BUFFER_SECONDS_KEY,
+)
 from tts.audio_player import ContinuousAudioPlayer
 
 
@@ -16,6 +20,37 @@ player = ContinuousAudioPlayer(
 player.start()
 
 print("[VOXCPM2 AUDIO] Worker hazır")
+
+
+def publish_buffer_level():
+
+    while True:
+        try:
+            buffered_seconds = (
+                player.get_buffered_seconds()
+            )
+
+            audio_redis.set(
+                PLAYBACK_BUFFER_SECONDS_KEY,
+                buffered_seconds,
+                ex=2,
+            )
+
+        except redis.exceptions.RedisError as error:
+            print(
+                "[REDIS ERROR] buffer level:",
+                error,
+            )
+
+        time.sleep(0.1)
+
+
+buffer_thread = threading.Thread(
+    target=publish_buffer_level,
+    daemon=True,
+)
+
+buffer_thread.start()
 
 
 while True:

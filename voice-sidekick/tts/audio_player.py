@@ -187,6 +187,14 @@ class ContinuousAudioPlayer:
 
             )
 
+    def get_buffered_seconds(self):
+
+        with self.lock:
+            return (
+                self.queued_samples
+                / self.sample_rate
+            )
+
     def stop(self):
 
         while True:
