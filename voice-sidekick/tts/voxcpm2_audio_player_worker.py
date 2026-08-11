@@ -42,7 +42,7 @@ def publish_buffer_level():
                 error,
             )
 
-        time.sleep(0.1)
+        time.sleep(0.02)
 
 
 buffer_thread = threading.Thread(
@@ -75,3 +75,15 @@ while True:
     )
 
     player.add_audio(audio_bytes)
+
+    try:
+        audio_redis.set(
+            PLAYBACK_BUFFER_SECONDS_KEY,
+            player.get_buffered_seconds(),
+            ex=2,
+        )
+    except redis.exceptions.RedisError as error:
+        print(
+            "[REDIS ERROR] immediate buffer level:",
+            error,
+        )

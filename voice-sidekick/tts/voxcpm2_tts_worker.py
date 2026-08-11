@@ -13,10 +13,11 @@ from queue_service.redis_client import (
 from tts.tts_normalizer import normalize_tts_text
 
 
-URL = "http://127.0.0.1:8031/tts/stream"
+URL = "http://127.0.0.1:18031/tts/stream"
 VOXCPM2_AUDIO_QUEUE = "voxcpm2_audio_queue"
 SAMPLE_RATE = 48000
 NETWORK_CHUNK_BYTES = 15360
+INTER_SENTENCE_PAUSE_SECONDS = 0.15
 
 MAX_BUFFER_SECONDS = 8.0
 RESUME_BUFFER_SECONDS = 4.0
@@ -32,10 +33,26 @@ def wait_for_playback_headroom():
                 PLAYBACK_BUFFER_SECONDS_KEY
             )
 
-            buffered_seconds = (
+            player_seconds = (
                 float(raw)
                 if raw is not None
                 else 0.0
+            )
+
+            redis_chunk_count = audio_redis.llen(
+                VOXCPM2_AUDIO_QUEUE
+            )
+
+            redis_queue_seconds = (
+                redis_chunk_count
+                * NETWORK_CHUNK_BYTES
+                / 2
+                / SAMPLE_RATE
+            )
+
+            total_buffered_seconds = (
+                player_seconds
+                + redis_queue_seconds
             )
 
         except redis.exceptions.RedisError as error:
@@ -47,21 +64,29 @@ def wait_for_playback_headroom():
             continue
 
         if not waiting:
-            if buffered_seconds <= MAX_BUFFER_SECONDS:
+
+            if (
+                total_buffered_seconds
+                <= MAX_BUFFER_SECONDS
+            ):
                 return
 
             waiting = True
 
             print(
                 f"[BACKPRESSURE] "
-                f"buffer={buffered_seconds:.2f}s "
-                f"| üretim bekletiliyor"
+                f"player={player_seconds:.2f}s "
+                f"| redis={redis_queue_seconds:.2f}s "
+                f"| total={total_buffered_seconds:.2f}s"
             )
 
-        if buffered_seconds <= RESUME_BUFFER_SECONDS:
+        if (
+            total_buffered_seconds
+            <= RESUME_BUFFER_SECONDS
+        ):
             print(
                 f"[BACKPRESSURE RELEASE] "
-                f"buffer={buffered_seconds:.2f}s"
+                f"total={total_buffered_seconds:.2f}s"
             )
             return
 
@@ -96,6 +121,7 @@ def main():
         )
 
         text = normalize_tts_text(text)
+        # Ultimate Cloning referans ritmini kullanır
 
         start = time.perf_counter()
         first_chunk_time = None
@@ -125,6 +151,8 @@ def main():
                             f"{first_chunk_time - start:.3f}s"
                         )
 
+                    wait_for_playback_headroom()
+
                     audio_redis.rpush(
                         VOXCPM2_AUDIO_QUEUE,
                         audio_bytes,
@@ -132,6 +160,21 @@ def main():
 
                     total_bytes += len(audio_bytes)
                     chunk_count += 1
+
+                pause_bytes = bytes(
+                    int(
+                        SAMPLE_RATE
+                        * INTER_SENTENCE_PAUSE_SECONDS
+                        * 2
+                    )
+                )
+
+                audio_redis.rpush(
+                    VOXCPM2_AUDIO_QUEUE,
+                    pause_bytes,
+                )
+
+                total_bytes += len(pause_bytes)
 
             generation_time = time.perf_counter() - start
             audio_seconds = total_bytes / 2 / SAMPLE_RATE

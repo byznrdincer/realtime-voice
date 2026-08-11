@@ -8,7 +8,15 @@ from pydantic import BaseModel
 from voxcpm import VoxCPM
 
 
-REFERENCE_AUDIO = "/data/female_10s.wav"
+REFERENCE_AUDIO = "/data/sidekick_female_voice_v1.wav"
+
+REFERENCE_TEXT = (
+    "Merhaba Beyzanur. Bugün sana açık, sakin ve anlaşılır bir şekilde "
+    "yardımcı olacağım. Sorularını dikkatle dinleyerek doğru bilgileri "
+    "paylaşacak, gerektiğinde önemli noktaları adım adım ve doğal bir "
+    "tempoda açıklayacağım."
+)
+
 SAMPLE_RATE = 48000
 
 app = FastAPI()
@@ -17,6 +25,7 @@ generation_lock = threading.Lock()
 
 class TTSRequest(BaseModel):
     text: str
+    use_reference: bool = True
 
 
 print("[MODEL] VoxCPM2 yükleniyor...")
@@ -57,7 +66,9 @@ def tts_stream(request: TTSRequest):
 
             for chunk in model.generate_streaming(
                 text=text,
-                reference_wav_path=REFERENCE_AUDIO,
+                prompt_wav_path=REFERENCE_AUDIO if request.use_reference else None,
+                prompt_text=REFERENCE_TEXT if request.use_reference else None,
+                reference_wav_path=REFERENCE_AUDIO if request.use_reference else None,
                 retry_badcase=False,
             ):
                 if first_chunk_time is None:

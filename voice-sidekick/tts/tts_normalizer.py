@@ -145,11 +145,36 @@ def normalize_markdown(text: str):
         text,
     )
 
-    # Sıralı listeler:
-    # 1) Metin → 1. Metin
+    # Sıralı listeleri konuşulabilir başlıklara dönüştür.
+    # 1. Sağlık → Birinci: Sağlık
+    list_ordinals = {
+        "1": "Birinci",
+        "2": "İkinci",
+        "3": "Üçüncü",
+        "4": "Dördüncü",
+        "5": "Beşinci",
+        "6": "Altıncı",
+        "7": "Yedinci",
+        "8": "Sekizinci",
+        "9": "Dokuzuncu",
+        "10": "Onuncu",
+    }
+
+    def ordered_list_repl(match):
+        number = match.group(1)
+        label = list_ordinals.get(number)
+
+        if label is None:
+            label = (
+                "Madde "
+                + number_to_turkish(number)
+            )
+
+        return f"{label}: "
+
     text = re.sub(
         r"(?m)^\s*(\d+)[.)]\s+",
-        r"\1. ",
+        ordered_list_repl,
         text,
     )
 

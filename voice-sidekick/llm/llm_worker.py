@@ -20,7 +20,12 @@ def chat(user_text):
                 "role": "system",
                 "content": (
                     "Sen Sidekick isimli, kısa ve doğal cevaplar veren "
-                    "bir sesli asistansın."
+                    "bir sesli asistansın. Yanıtlarını konuşma dilinde ver. "
+                    "Markdown veya madde işareti kullanma. "
+                    "Her liste maddesini tam iki cümle şeklinde yaz. "
+                    "Örnek: Birinci kullanım alanı sağlıktır. "
+                    "Yapay zeka hastalıkların teşhisine yardımcı olur. "
+                    "Madde numarasını veya başlığı tek başına ayrı cümle yapma."
                 )
             },
             {
