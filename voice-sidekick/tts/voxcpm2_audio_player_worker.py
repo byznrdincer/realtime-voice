@@ -19,7 +19,13 @@ player = ContinuousAudioPlayer(
 
 player.start()
 
+# Ses cihazını ilk kullanıcı isteğinden önce hazırla.
+player.stream.start()
+player.started = True
+
+print("[AUDIO STREAM] Önceden hazır")
 print("[VOXCPM2 AUDIO] Worker hazır")
+
 
 
 def publish_buffer_level():

@@ -1,8 +1,12 @@
 import re
 
-from queue_service.redis_client import text_redis, TEXT_QUEUE
+from queue_service.redis_client import (
+    text_redis,
+    TEXT_QUEUE,
+)
 
 MIN_SENTENCES = 2
+FIRST_CHUNK_MIN_CHARS = 55
 MAX_CHARS = 220
 
 SENTENCE_END_PATTERN = re.compile(
@@ -14,21 +18,26 @@ class SentenceBuffer:
 
     def __init__(self):
         self.buffer = ""
+        self.sent_first_chunk = False
 
     def _send(self, cutoff):
 
         chunk = self.buffer[:cutoff].strip()
-        self.buffer = self.buffer[cutoff:].lstrip()
+        self.buffer = (
+            self.buffer[cutoff:].lstrip()
+        )
 
         if not chunk:
             return
 
         text_redis.lpush(
             TEXT_QUEUE,
-            chunk
+            chunk,
         )
 
         print(f"[REDIS] {chunk}")
+
+        self.sent_first_chunk = True
 
     def _emit_ready(self):
 
@@ -42,14 +51,25 @@ class SentenceBuffer:
 
             cutoff = None
 
-            # Normal durumda iki cümleyi birlikte gönder.
-            if len(matches) >= MIN_SENTENCES:
+            # İlk yeterince uzun cümleyi
+            # ikinci cümleyi beklemeden gönder.
+            if (
+                not self.sent_first_chunk
+                and matches
+                and matches[0].end()
+                >= FIRST_CHUNK_MIN_CHARS
+            ):
+                cutoff = matches[0].end()
+
+            # Sonraki parçalarda iki cümleyi
+            # birlikte gönder.
+            elif len(matches) >= MIN_SENTENCES:
                 cutoff = matches[
                     MIN_SENTENCES - 1
                 ].end()
 
-            # Metin fazla büyüdüyse mevcut en uygun
-            # cümle sınırından gönder.
+            # Buffer fazla büyürse uygun
+            # cümle veya kelime sınırından gönder.
             elif len(self.buffer) >= MAX_CHARS:
 
                 if matches:
@@ -80,3 +100,7 @@ class SentenceBuffer:
 
         if self.buffer.strip():
             self._send(len(self.buffer))
+
+        # Yeni kullanıcı turunda ilk cümle
+        # yeniden hızlı gönderilsin.
+        self.sent_first_chunk = False
