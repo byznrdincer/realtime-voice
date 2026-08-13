@@ -1,4 +1,5 @@
 import os
+import time
 
 from openai import OpenAI
 from llm.sentence_buffer import SentenceBuffer
@@ -20,8 +21,16 @@ def chat(user_text, turn_id):
         )
         return False
 
+    llm_started = time.perf_counter()
+
+    print(
+        f"[LATENCY] LLM START "
+        f"| turn_id={turn_id}"
+    )
+
     buffer = SentenceBuffer(
-        turn_id=turn_id
+        turn_id=turn_id,
+        started_at=llm_started,
     )
 
     stream = client.chat.completions.create(
@@ -32,6 +41,8 @@ def chat(user_text, turn_id):
                 "content": (
                     "Sen Sidekick isimli, kısa ve doğal cevaplar veren "
                     "bir sesli asistansın. Yanıtlarını konuşma dilinde ver. "
+                    "Yanıtının ilk cümlesini kısa, doğrudan ve tamamlanmış kur. "
+                    "Ardından gerektiği kadar ayrıntı verebilirsin. "
                     "Markdown veya madde işareti kullanma. "
                     "Her liste maddesini tam iki cümle şeklinde yaz. "
                     "Örnek: Birinci kullanım alanı sağlıktır. "
@@ -47,7 +58,14 @@ def chat(user_text, turn_id):
         stream=True
     )
 
-    print("Asistan: ", end="", flush=True)
+    print(
+        f"[LATENCY] LLM STREAM OPEN "
+        f"| turn_id={turn_id} "
+        f"| elapsed="
+        f"{time.perf_counter() - llm_started:.3f}s"
+    )
+
+    first_token_seen = False
 
     for chunk in stream:
 
@@ -73,6 +91,22 @@ def chat(user_text, turn_id):
 
         if token is None:
             continue
+
+        if not first_token_seen:
+            first_token_seen = True
+
+            print(
+                f"[LATENCY] LLM FIRST TOKEN "
+                f"| turn_id={turn_id} "
+                f"| elapsed="
+                f"{time.perf_counter() - llm_started:.3f}s"
+            )
+
+            print(
+                "Asistan: ",
+                end="",
+                flush=True,
+            )
 
         print(token, end="", flush=True)
 

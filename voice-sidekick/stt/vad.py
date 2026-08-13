@@ -18,6 +18,7 @@ class EnergyVAD:
         self.sample_rate = sample_rate
         self.frame_ms = frame_ms
         self.threshold = threshold
+        self.end_ms = end_ms
 
         self.frame_samples = int(
             sample_rate * frame_ms / 1000
@@ -76,6 +77,17 @@ class EnergyVAD:
                 )
             )
         )
+
+    def get_active_audio(self):
+        if (
+            not self.active
+            or not self.recorded_frames
+        ):
+            return None
+
+        return np.concatenate(
+            self.recorded_frames
+        ).copy()
 
     def process(self, frame):
         frame = np.asarray(

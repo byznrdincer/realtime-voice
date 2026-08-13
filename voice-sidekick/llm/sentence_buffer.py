@@ -1,4 +1,5 @@
 import re
+import time
 
 from queue_service.messages import encode_text_message
 from queue_service.redis_client import (
@@ -7,7 +8,7 @@ from queue_service.redis_client import (
 )
 
 MIN_SENTENCES = 2
-FIRST_CHUNK_MIN_CHARS = 55
+FIRST_CHUNK_MIN_CHARS = 30
 MAX_CHARS = 220
 
 SENTENCE_END_PATTERN = re.compile(
@@ -17,8 +18,13 @@ SENTENCE_END_PATTERN = re.compile(
 
 class SentenceBuffer:
 
-    def __init__(self, turn_id=None):
+    def __init__(
+        self,
+        turn_id=None,
+        started_at=None,
+    ):
         self.turn_id = turn_id
+        self.started_at = started_at
         self.buffer = ""
         self.sent_first_chunk = False
 
@@ -41,10 +47,26 @@ class SentenceBuffer:
             else chunk
         )
 
+        is_first_chunk = (
+            not self.sent_first_chunk
+        )
+
         text_redis.lpush(
             TEXT_QUEUE,
             payload,
         )
+
+        if (
+            is_first_chunk
+            and self.started_at is not None
+        ):
+            print(
+                f"[LATENCY] FIRST TEXT QUEUED "
+                f"| turn_id={self.turn_id} "
+                f"| elapsed="
+                f"{time.perf_counter() - self.started_at:.3f}s "
+                f"| chars={len(chunk)}"
+            )
 
         print(f"[REDIS] {chunk}")
 
