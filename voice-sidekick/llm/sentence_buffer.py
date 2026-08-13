@@ -1,5 +1,6 @@
 import re
 
+from queue_service.messages import encode_text_message
 from queue_service.redis_client import (
     text_redis,
     TEXT_QUEUE,
@@ -16,7 +17,8 @@ SENTENCE_END_PATTERN = re.compile(
 
 class SentenceBuffer:
 
-    def __init__(self):
+    def __init__(self, turn_id=None):
+        self.turn_id = turn_id
         self.buffer = ""
         self.sent_first_chunk = False
 
@@ -30,9 +32,18 @@ class SentenceBuffer:
         if not chunk:
             return
 
+        payload = (
+            encode_text_message(
+                self.turn_id,
+                chunk,
+            )
+            if self.turn_id is not None
+            else chunk
+        )
+
         text_redis.lpush(
             TEXT_QUEUE,
-            chunk,
+            payload,
         )
 
         print(f"[REDIS] {chunk}")
@@ -93,6 +104,10 @@ class SentenceBuffer:
 
         self.buffer += token
         self._emit_ready()
+
+    def reset(self):
+        self.buffer = ""
+        self.sent_first_chunk = False
 
     def flush(self):
 

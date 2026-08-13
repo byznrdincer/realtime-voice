@@ -4,6 +4,10 @@ import time
 import redis
 import requests
 
+from queue_service.messages import (
+    decode_text_message,
+    encode_audio_message,
+)
 from queue_service.redis_client import (
     text_redis,
     audio_redis,
@@ -13,6 +17,12 @@ from queue_service.redis_client import (
 )
 
 from tts.tts_normalizer import normalize_tts_text
+from queue_service.interrupt import (
+    get_interrupt_version,
+)
+from queue_service.worker_signals import (
+    install_clean_shutdown,
+)
 
 
 URL = os.getenv(
@@ -98,13 +108,15 @@ def wait_for_playback_headroom():
 
 
 def main():
+    install_clean_shutdown()
+
     print("[VOXCPM2 TTS] Worker hazır")
 
     while True:
         try:
             result = text_redis.brpop(
                 TEXT_QUEUE,
-                timeout=5,
+                timeout=1,
             )
         except redis.exceptions.RedisError as error:
             print("[REDIS ERROR] text queue:", error)
@@ -114,7 +126,33 @@ def main():
         if result is None:
             continue
 
-        _, text = result
+        _, text_payload = result
+
+        try:
+            message_turn_id, text = (
+                decode_text_message(
+                    text_payload
+                )
+            )
+        except (TypeError, ValueError) as error:
+            print(
+                "[TTS MESSAGE ERROR]",
+                error,
+            )
+            continue
+
+        turn_id = (
+            message_turn_id
+            if message_turn_id is not None
+            else get_interrupt_version()
+        )
+
+        if get_interrupt_version() != turn_id:
+            print(
+                "[TTS STALE] "
+                f"turn_id={turn_id}"
+            )
+            continue
 
         wait_for_playback_headroom()
 
@@ -131,6 +169,7 @@ def main():
         first_chunk_time = None
         total_bytes = 0
         chunk_count = 0
+        interrupted = False
 
         try:
             with requests.post(
@@ -147,6 +186,13 @@ def main():
                     if not audio_bytes:
                         continue
 
+                    if (
+                        get_interrupt_version()
+                        != turn_id
+                    ):
+                        interrupted = True
+                        break
+
                     if first_chunk_time is None:
                         first_chunk_time = time.perf_counter()
 
@@ -157,13 +203,36 @@ def main():
 
                     wait_for_playback_headroom()
 
+                    if (
+                        get_interrupt_version()
+                        != turn_id
+                    ):
+                        interrupted = True
+                        break
+
                     audio_redis.rpush(
                         VOXCPM2_AUDIO_QUEUE,
-                        audio_bytes,
+                        encode_audio_message(
+                            turn_id,
+                            audio_bytes,
+                        ),
                     )
 
                     total_bytes += len(audio_bytes)
                     chunk_count += 1
+
+                if (
+                    get_interrupt_version()
+                    != turn_id
+                ):
+                    interrupted = True
+
+                if interrupted:
+                    print(
+                        f"[TTS INTERRUPTED] "
+                        f"version={turn_id}"
+                    )
+                    continue
 
                 pause_bytes = bytes(
                     int(
@@ -175,7 +244,10 @@ def main():
 
                 audio_redis.rpush(
                     VOXCPM2_AUDIO_QUEUE,
-                    pause_bytes,
+                    encode_audio_message(
+                        turn_id,
+                        pause_bytes,
+                    ),
                 )
 
                 total_bytes += len(pause_bytes)

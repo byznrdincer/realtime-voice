@@ -187,6 +187,28 @@ class ContinuousAudioPlayer:
 
             )
 
+    def clear(self):
+        """Barge-in sırasında bekleyen sesi anında temizler."""
+
+        with self.lock:
+            discarded_samples = self.queued_samples
+
+            self.chunks.clear()
+            self.current_chunk = None
+            self.current_position = 0
+            self.queued_samples = 0
+
+        discarded_seconds = (
+            discarded_samples / self.sample_rate
+        )
+
+        print(
+            f"[AUDIO CLEAR] "
+            f"silinen={discarded_seconds:.2f}s"
+        )
+
+        return discarded_seconds
+
     def get_buffered_seconds(self):
 
         with self.lock:

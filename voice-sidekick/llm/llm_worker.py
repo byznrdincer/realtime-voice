@@ -2,16 +2,27 @@ import os
 
 from openai import OpenAI
 from llm.sentence_buffer import SentenceBuffer
+from queue_service.interrupt import (
+    get_interrupt_version,
+)
 
 
 client = OpenAI(
     api_key=os.environ["OPENAI_API_KEY"]
 )
 
-buffer = SentenceBuffer()
 
 
-def chat(user_text):
+def chat(user_text, turn_id):
+    if get_interrupt_version() != turn_id:
+        print(
+            f"[LLM STALE] turn_id={turn_id}"
+        )
+        return False
+
+    buffer = SentenceBuffer(
+        turn_id=turn_id
+    )
 
     stream = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -40,6 +51,24 @@ def chat(user_text):
 
     for chunk in stream:
 
+        if (
+            get_interrupt_version()
+            != turn_id
+        ):
+            buffer.reset()
+
+            close = getattr(
+                stream,
+                "close",
+                None,
+            )
+
+            if callable(close):
+                close()
+
+            print("\n[LLM INTERRUPTED]")
+            return False
+
         token = chunk.choices[0].delta.content
 
         if token is None:
@@ -52,4 +81,5 @@ def chat(user_text):
     buffer.flush()
 
     print()
+    return True
 
