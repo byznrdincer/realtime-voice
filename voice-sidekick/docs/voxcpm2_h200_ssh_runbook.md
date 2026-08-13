@@ -1,4 +1,4 @@
-# VoxCPM2 – H200, Docker ve SSH Tüneli Çalıştırma Rehberi
+# Voice Sidekick – H200, Docker ve SSH Tüneli Çalıştırma Rehberi
 
 ## 1. Sistem mimarisi
 
@@ -33,7 +33,7 @@ Kullanıcı
 GPU sunucusuna bağlan:
 
 ```bash
-ssh bdincer@45.145.22.79
+ssh <H200_USER>@<H200_HOST>
 ```
 
 Container durumunu kontrol et:
@@ -92,7 +92,7 @@ Container yeniden oluşturulursa IP değişebilir. Böyle bir durumda SSH tünel
 Mac terminalinde:
 
 ```bash
-ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 18031:172.17.0.5:8031 bdincer@45.145.22.79
+ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 18031:172.17.0.5:8031 <H200_USER>@<H200_HOST>
 ```
 
 Tünelin açık olduğunu kontrol et:
@@ -222,7 +222,7 @@ PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_*.py' -v
 Mevcut sonuç:
 
 ```text
-Ran 13 tests
+Ran 24 tests
 OK
 ```
 
@@ -242,12 +242,14 @@ Test edilen başlıca davranışlar:
 Ana uygulama başlangıçta ve kapanışta şunları temizler:
 
 - `TEXT_QUEUE`
+- `USER_INPUT_QUEUE`
 - `VOXCPM2_AUDIO_QUEUE`
+- Interrupt sürümü
 - Playback buffer değeri
 
 Redis kapalıysa sistem başlatılmaz.
 
-Audio veya TTS worker çalışma sırasında kapanırsa ana program bunu algılar, diğer worker’ı durdurur ve kuyrukları temizler.
+Audio, TTS veya STT worker çalışma sırasında kapanırsa ana program bunu algılar, diğer worker’ı durdurur ve kuyrukları temizler.
 
 ## 13. Sık karşılaşılan hatalar
 
@@ -328,3 +330,87 @@ H200 VoxCPM2 sunucusunu kapatmak için:
 ```bash
 docker exec voxcpm2-test pkill -TERM -f 'uvicorn server_voxcpm:app'
 ```
+
+## 15. H200 Faster-Whisper ve barge-in
+
+Whisper servisinin kaynakları:
+
+```text
+infra/whisper-h200/
+├── Dockerfile
+├── requirements.txt
+├── server.py
+└── .dockerignore
+```
+
+Temel yapılandırma:
+
+- Model: `turbo`
+- Device: `cuda`
+- Compute type: `float16`
+- H200 host portu: `8042`
+- Container portu: `8002`
+- Mac tünel portu: `18032`
+
+### Docker imajını oluşturma
+
+H200 üzerinde:
+
+```bash
+cd realtime-voice/infra/whisper-h200
+docker build -t voice-sidekick-whisper-h200:latest .
+```
+
+Container oluşturma:
+
+```bash
+docker run -d \
+  --name voice-sidekick-whisper-h200 \
+  --gpus all \
+  --restart unless-stopped \
+  -p 127.0.0.1:8042:8002 \
+  -e WHISPER_MODEL=turbo \
+  -e WHISPER_COMPUTE_TYPE=float16 \
+  -v voice-sidekick-whisper-h200-cache:/root/.cache/huggingface \
+  voice-sidekick-whisper-h200:latest
+```
+
+Mevcut container'ı başlatma:
+
+```bash
+docker start voice-sidekick-whisper-h200
+curl http://127.0.0.1:8042/health
+```
+
+### Mac üzerinde Whisper tüneli
+
+```bash
+ssh -fN \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -L 18032:127.0.0.1:8042 \
+  <H200_USER>@<H200_HOST>
+```
+
+Kontrol:
+
+```bash
+curl http://127.0.0.1:18032/health
+```
+
+### STT ve barge-in ayarları
+
+```env
+WHISPER_URL=http://127.0.0.1:18032
+ENABLE_STT=true
+MIC_SAMPLE_RATE=48000
+VAD_RMS_THRESHOLD=0.030
+VAD_ECHO_GUARD=true
+VAD_PLAYBACK_RMS_THRESHOLD=0.035
+VAD_PLAYBACK_ACTIVE_SECONDS=0.05
+```
+
+Kullanıcı konuşmaya başladığında VAD interrupt oluşturur. Eski LLM,
+TTS ve PCM parçaları tur kimliğiyle reddedilir. Whisper sonucu yeni
+kullanıcı turu olarak LLM'e gönderilir.
