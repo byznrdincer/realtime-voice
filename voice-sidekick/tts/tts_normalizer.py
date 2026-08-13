@@ -426,6 +426,47 @@ def normalize_units(text: str):
     return text
 
 
+def normalize_yz_abbreviation(text: str):
+    """
+    YZ kısaltmasını ve Türkçe eklerini konuşulabilir hâle getirir.
+    """
+
+    suffix_replacements = {
+        None: "yapay zeka",
+        "nin": "yapay zekanın",
+        "nın": "yapay zekanın",
+        "nun": "yapay zekanın",
+        "nün": "yapay zekanın",
+        "yi": "yapay zekayı",
+        "yı": "yapay zekayı",
+        "yu": "yapay zekayı",
+        "yü": "yapay zekayı",
+        "ye": "yapay zekaya",
+        "ya": "yapay zekaya",
+        "de": "yapay zekada",
+        "da": "yapay zekada",
+        "den": "yapay zekadan",
+        "dan": "yapay zekadan",
+        "le": "yapay zekayla",
+        "la": "yapay zekayla",
+    }
+
+    def repl(match):
+        suffix = match.group(1)
+
+        if suffix is not None:
+            suffix = suffix.casefold()
+
+        return suffix_replacements[suffix]
+
+    return re.sub(
+        r"\bYZ(?:['’](nin|nın|nun|nün|yi|yı|yu|yü|ye|ya|de|da|den|dan|le|la))?\b",
+        repl,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
 def normalize_words(text: str):
     """
     Teknik kelimeleri konuşulabilir biçime dönüştürür.
@@ -453,7 +494,8 @@ def normalize_tts_text(text: str):
     # Önce Markdown ve biçimlendirme karakterlerini temizle.
     text = normalize_markdown(text)
 
-    # Teknik kelime ve birimleri dönüştür.
+    # Kısaltmaları, teknik kelimeleri ve birimleri dönüştür.
+    text = normalize_yz_abbreviation(text)
     text = normalize_words(text)
     text = normalize_units(text)
 
