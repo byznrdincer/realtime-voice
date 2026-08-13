@@ -3,7 +3,7 @@ import time
 from typing import Literal
 
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from voxcpm import VoxCPM
@@ -49,7 +49,6 @@ generation_lock = threading.Lock()
 
 class TTSRequest(BaseModel):
     text: str
-    use_reference: bool = True
     voice_profile: Literal[
         "sidekick",
         "beyzanur",
@@ -63,6 +62,45 @@ model = VoxCPM.from_pretrained(
     device="cuda",
     load_denoiser=False,
 )
+
+print("[VOICE CACHE] hazırlanıyor...")
+
+VOICE_PROMPT_CACHES = {}
+
+for profile_name, profile in VOICE_PROFILES.items():
+    cache_start = time.perf_counter()
+
+    VOICE_PROMPT_CACHES[profile_name] = (
+        model.tts_model.build_prompt_cache(
+            prompt_text=profile["text"],
+            prompt_wav_path=profile["audio"],
+            reference_wav_path=profile["audio"],
+        )
+    )
+
+    print(
+        f"[VOICE CACHE] {profile_name} hazır "
+        f"| {time.perf_counter() - cache_start:.3f}s"
+    )
+
+print("[VOICE WARMUP] başlıyor...")
+
+for profile_name, prompt_cache in VOICE_PROMPT_CACHES.items():
+    warmup_start = time.perf_counter()
+
+    for _audio, _, _ in (
+        model.tts_model.generate_with_prompt_cache_streaming(
+            target_text="Merhaba.",
+            prompt_cache=prompt_cache,
+            retry_badcase=False,
+        )
+    ):
+        pass
+
+    print(
+        f"[VOICE WARMUP] {profile_name} hazır "
+        f"| {time.perf_counter() - warmup_start:.3f}s"
+    )
 
 print("[MODEL] Hazır")
 print(f"[DEFAULT REFERENCE] {SIDEKICK_REFERENCE_AUDIO}")
@@ -84,23 +122,11 @@ def tts_stream(request: TTSRequest):
     text = request.text.strip()
 
     if not text:
-        return {"error": "Metin boş olamaz"}
+        raise HTTPException(
+            status_code=400,
+            detail="Metin boş olamaz",
+        )
 
-    profile = VOICE_PROFILES[
-        request.voice_profile
-    ]
-
-    reference_audio = (
-        profile["audio"]
-        if request.use_reference
-        else None
-    )
-
-    reference_text = (
-        profile["text"]
-        if request.use_reference
-        else None
-    )
 
     def generate_audio():
         with generation_lock:
@@ -115,13 +141,23 @@ def tts_stream(request: TTSRequest):
                 f"| words={len(text.split())}"
             )
 
-            for chunk in model.generate_streaming(
-                text=text,
-                prompt_wav_path=reference_audio,
-                prompt_text=reference_text,
-                reference_wav_path=reference_audio,
-                retry_badcase=False,
+            prompt_cache = VOICE_PROMPT_CACHES[
+                request.voice_profile
+            ]
+
+            for chunk, _, _ in (
+                model.tts_model.generate_with_prompt_cache_streaming(
+                    target_text=text,
+                    prompt_cache=prompt_cache,
+                    retry_badcase=False,
+                )
             ):
+                chunk = (
+                    chunk
+                    .squeeze()
+                    .cpu()
+                    .numpy()
+                )
                 if first_chunk_time is None:
                     first_chunk_time = time.perf_counter()
 

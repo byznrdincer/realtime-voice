@@ -1,11 +1,18 @@
 import csv
 import itertools
+import os
 import time
 
 import requests
+from dotenv import load_dotenv
 
 
-URL = "http://127.0.0.1:8031/tts/stream"
+load_dotenv()
+
+URL = os.getenv(
+    "VOXCPM2_TTS_URL",
+    "http://127.0.0.1:18031/tts/stream",
+)
 SAMPLE_RATE = 48000
 TEST_SECONDS = 10 * 60
 

@@ -1,0 +1,7 @@
+numpy==2.4.6
+num2words==0.5.14
+openai==2.53.0
+python-dotenv==1.2.2
+redis==8.1.0
+requests==2.34.2
+sounddevice==0.5.5

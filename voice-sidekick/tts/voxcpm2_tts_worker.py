@@ -1,3 +1,4 @@
+import os
 import time
 
 import redis
@@ -7,14 +8,17 @@ from queue_service.redis_client import (
     text_redis,
     audio_redis,
     TEXT_QUEUE,
+    VOXCPM2_AUDIO_QUEUE,
     PLAYBACK_BUFFER_SECONDS_KEY,
 )
 
 from tts.tts_normalizer import normalize_tts_text
 
 
-URL = "http://127.0.0.1:18031/tts/stream"
-VOXCPM2_AUDIO_QUEUE = "voxcpm2_audio_queue"
+URL = os.getenv(
+    "VOXCPM2_TTS_URL",
+    "http://127.0.0.1:18031/tts/stream",
+)
 SAMPLE_RATE = 48000
 NETWORK_CHUNK_BYTES = 15360
 INTER_SENTENCE_PAUSE_SECONDS = 0.15
@@ -133,7 +137,7 @@ def main():
                 URL,
                 json={"text": text},
                 stream=True,
-                timeout=120,
+                timeout=(5, 120),
             ) as response:
                 response.raise_for_status()
 

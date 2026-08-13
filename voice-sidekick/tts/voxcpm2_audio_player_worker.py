@@ -5,12 +5,12 @@ import redis
 
 from queue_service.redis_client import (
     audio_redis,
+    VOXCPM2_AUDIO_QUEUE,
     PLAYBACK_BUFFER_SECONDS_KEY,
 )
 from tts.audio_player import ContinuousAudioPlayer
 
 
-VOXCPM2_AUDIO_QUEUE = "voxcpm2_audio_queue"
 
 player = ContinuousAudioPlayer(
     sample_rate=48000,

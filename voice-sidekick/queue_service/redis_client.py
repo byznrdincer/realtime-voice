@@ -15,6 +15,7 @@ audio_redis = redis.Redis(
 
 
 TEXT_QUEUE = "text_queue"
+VOXCPM2_AUDIO_QUEUE = "voxcpm2_audio_queue"
 
 PLAYBACK_BUFFER_SECONDS_KEY = (
     "voxcpm2_playback_buffer_seconds"
