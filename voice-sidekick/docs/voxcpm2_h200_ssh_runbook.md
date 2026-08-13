@@ -244,7 +244,6 @@ Ana uygulama başlangıçta ve kapanışta şunları temizler:
 - `TEXT_QUEUE`
 - `USER_INPUT_QUEUE`
 - `VOXCPM2_AUDIO_QUEUE`
-- Interrupt sürümü
 - Playback buffer değeri
 
 Redis kapalıysa sistem başlatılmaz.
@@ -357,7 +356,7 @@ Temel yapılandırma:
 H200 üzerinde:
 
 ```bash
-cd realtime-voice/infra/whisper-h200
+cd <REPO_DIZINI>/infra/whisper-h200
 docker build -t voice-sidekick-whisper-h200:latest .
 ```
 
