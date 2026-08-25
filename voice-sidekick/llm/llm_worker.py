@@ -6,6 +6,7 @@ from openai import OpenAI
 
 from llm.sentence_buffer import SentenceBuffer
 from llm.wake_word import extract_wake_command
+from queue_service.events import publish_event
 from queue_service.interrupt import (
     get_interrupt_version,
 )
@@ -100,6 +101,18 @@ def chat(user_text, turn_id):
             f"Oppy: {wake_response}"
         )
 
+        publish_event("assistant_start", turn_id=turn_id)
+        publish_event(
+            "assistant_token",
+            text=wake_response,
+            turn_id=turn_id,
+        )
+        publish_event(
+            "assistant_done",
+            turn_id=turn_id,
+            text=wake_response,
+        )
+
         # Önce sabit karşılama cümlesini söyle.
         wake_buffer.add(wake_response)
         wake_buffer.flush()
@@ -165,6 +178,7 @@ def chat(user_text, turn_id):
 
     first_token_seen = False
     first_reasoning_seen = False
+    assembled = []
 
     for chunk in stream:
         if get_interrupt_version() != turn_id:
@@ -180,6 +194,7 @@ def chat(user_text, turn_id):
                 close()
 
             print("\n[LLM INTERRUPTED]")
+            publish_event("interrupted", turn_id=turn_id)
             return False
 
         if not chunk.choices:
@@ -223,16 +238,28 @@ def chat(user_text, turn_id):
                 end="",
                 flush=True,
             )
+            publish_event("assistant_start", turn_id=turn_id)
 
         print(
             token,
             end="",
             flush=True,
         )
+        publish_event(
+            "assistant_token",
+            text=token,
+            turn_id=turn_id,
+        )
 
         buffer.add(token)
+        assembled.append(token)
 
     buffer.flush()
+    publish_event(
+        "assistant_done",
+        turn_id=turn_id,
+        text="".join(assembled),
+    )
 
     print()
     return True

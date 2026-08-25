@@ -2,6 +2,8 @@ import os
 import select
 import subprocess
 import sys
+import threading
+import time
 
 import redis
 from dotenv import load_dotenv
@@ -17,10 +19,12 @@ ENABLE_STT = (
 )
 
 from llm.llm_worker import chat
+from queue_service.events import publish_event
 from queue_service.interrupt import (
     get_interrupt_version,
     request_interrupt,
 )
+from ui.server import set_listen_controller, start_ui
 from queue_service.messages import (
     decode_text_message,
 )
@@ -81,6 +85,7 @@ def clear_voxcpm2_state(stage):
 def start_worker(worker_path):
     env = os.environ.copy()
     env["PYTHONPATH"] = "."
+    env["PYTHONUNBUFFERED"] = "1"
 
     return subprocess.Popen(
         [sys.executable, worker_path],
@@ -105,21 +110,41 @@ def stop_process(process):
 
 
 def check_workers(workers):
+    remaining = []
+    stt_died = False
+
     for worker_name, process in workers:
         exit_code = process.poll()
 
-        if exit_code is not None:
-            raise WorkerStoppedError(
-                f"{worker_name} worker kapandı "
+        if exit_code is None:
+            remaining.append((worker_name, process))
+            continue
+
+        if worker_name == "stt":
+            print(
+                "[MAIN] STT worker kapandı "
                 f"| exit_code={exit_code}"
             )
+            stt_died = True
+            continue
+
+        raise WorkerStoppedError(
+            f"{worker_name} worker kapandı "
+            f"| exit_code={exit_code}"
+        )
+
+    if len(remaining) != len(workers):
+        workers[:] = remaining
+
+    return stt_died
 
 
-def read_user_input(workers):
+def read_user_input(workers, on_stt_died=None):
     print("Sen: ", end="", flush=True)
 
     while True:
-        check_workers(workers)
+        if check_workers(workers) and on_stt_died:
+            on_stt_died()
 
         try:
             voice_payload = text_redis.lpop(
@@ -159,6 +184,11 @@ def read_user_input(workers):
             print(
                 f"\n[VOICE USER] {voice_text}"
             )
+            publish_event(
+                "user",
+                text=voice_text,
+                turn_id=voice_turn_id,
+            )
             return voice_text, voice_turn_id
 
         readable, _, _ = select.select(
@@ -176,7 +206,10 @@ def read_user_input(workers):
         if line == "":
             raise EOFError
 
-        return line.rstrip("\n"), None
+        typed = line.rstrip("\n")
+        if typed.strip():
+            publish_event("user", text=typed, turn_id=None)
+        return typed, None
 
 
 def main():
@@ -190,6 +223,73 @@ def main():
     audio_process = None
     tts_process = None
     stt_process = None
+    workers = []
+    listening = False
+    listen_lock = threading.Lock()
+
+    def start_stt():
+        nonlocal stt_process, listening
+        if not ENABLE_STT:
+            return
+        if stt_process is not None and stt_process.poll() is None:
+            listening = True
+            return
+        print("[MAIN] Whisper STT worker başlatılıyor...")
+        stt_process = start_worker("stt/whisper_worker.py")
+        time.sleep(0.4)
+        if stt_process.poll() is not None:
+            print(
+                "[MAIN] STT başlatılamadı "
+                f"| exit_code={stt_process.poll()}"
+            )
+            stt_process = None
+            listening = False
+            return
+        workers[:] = [
+            item for item in workers if item[0] != "stt"
+        ]
+        workers.append(("stt", stt_process))
+        listening = True
+
+    def pause_listen():
+        nonlocal stt_process, listening
+        process = None
+        with listen_lock:
+            if not listening:
+                return
+            process = stt_process
+            stt_process = None
+            workers[:] = [
+                item for item in workers if item[0] != "stt"
+            ]
+            listening = False
+        print("[MAIN] Dinleme duraklatıldı")
+        request_interrupt("ui-pause")
+        stop_process(process)
+        time.sleep(0.3)
+        publish_event("listen", active=False)
+
+    def mark_stt_down():
+        nonlocal stt_process, listening
+        with listen_lock:
+            if not listening and stt_process is None:
+                return
+            stt_process = None
+            workers[:] = [
+                item for item in workers if item[0] != "stt"
+            ]
+            listening = False
+        publish_event("listen", active=False)
+
+    def resume_listen():
+        with listen_lock:
+            if listening:
+                return
+            start_stt()
+            active = listening
+        if active:
+            print("[MAIN] Dinleme yeniden açıldı")
+            publish_event("listen", active=True)
 
     try:
         print(
@@ -210,33 +310,31 @@ def main():
             "tts/voxcpm2_tts_worker.py"
         )
 
-        workers = [
-            ("audio", audio_process),
-            ("tts", tts_process),
-        ]
+        workers.append(("audio", audio_process))
+        workers.append(("tts", tts_process))
+        start_stt()
 
-        if ENABLE_STT:
-            print(
-                "[MAIN] Whisper STT worker "
-                "başlatılıyor..."
-            )
-
-            stt_process = start_worker(
-                "stt/whisper_worker.py"
-            )
-
-            workers.append(
-                ("stt", stt_process)
-            )
+        set_listen_controller(
+            pause_listen,
+            resume_listen,
+            lambda: listening,
+        )
+        start_ui()
+        publish_event(
+            "ready",
+            stt=ENABLE_STT,
+            listening=listening,
+        )
 
         print(
             "[MAIN] VoxCPM2 sistemi hazır "
-            f"| STT={'aktif' if ENABLE_STT else 'pasif'}"
+            f"| STT={'aktif' if listening else 'pasif'}"
         )
 
         while True:
             text, turn_id = read_user_input(
-                workers
+                workers,
+                on_stt_died=mark_stt_down,
             )
 
             if not text.strip():
@@ -258,7 +356,8 @@ def main():
                 continue
 
             chat(text, turn_id)
-            check_workers(workers)
+            if check_workers(workers):
+                mark_stt_down()
 
     except WorkerStoppedError as error:
         print(f"\n[MAIN ERROR] {error}")

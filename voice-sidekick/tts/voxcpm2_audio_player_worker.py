@@ -59,7 +59,7 @@ def watch_interrupts():
                 audio_redis.set(
                     PLAYBACK_BUFFER_SECONDS_KEY,
                     0,
-                    ex=2,
+                    ex=8,
                 )
 
                 print(
@@ -88,7 +88,7 @@ def publish_buffer_level():
             audio_redis.set(
                 PLAYBACK_BUFFER_SECONDS_KEY,
                 buffered_seconds,
-                ex=2,
+                ex=8,
             )
 
         except redis.exceptions.RedisError as error:
@@ -176,7 +176,7 @@ while True:
         audio_redis.set(
             PLAYBACK_BUFFER_SECONDS_KEY,
             player.get_buffered_seconds(),
-            ex=2,
+            ex=8,
         )
     except redis.exceptions.RedisError as error:
         print(

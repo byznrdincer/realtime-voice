@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from queue_service.messages import (
     encode_text_message,
 )
+from queue_service.events import publish_event
 from queue_service.interrupt import (
     get_interrupt_version,
     request_interrupt,
@@ -27,6 +28,12 @@ from queue_service.redis_client import (
     text_redis,
     USER_INPUT_QUEUE,
     PLAYBACK_BUFFER_SECONDS_KEY,
+    TTS_ACTIVE_KEY,
+)
+from stt.echo_guard import (
+    EchoGuard,
+    is_echo_transcript,
+    recent_spoken_texts,
 )
 from stt.vad import EnergyVAD
 
@@ -104,36 +111,27 @@ ECHO_GUARD_ENABLED = (
 
 PLAYBACK_VAD_THRESHOLD = float(
     os.getenv(
-        "VAD_PLAYBACK_RMS_THRESHOLD",
-        "0.035",
+        "VAD_BARGE_IN_RMS_THRESHOLD",
+        os.getenv(
+            "VAD_PLAYBACK_RMS_THRESHOLD",
+            "0.10",
+        ),
     )
 )
 
 PLAYBACK_ACTIVE_SECONDS = float(
     os.getenv(
         "VAD_PLAYBACK_ACTIVE_SECONDS",
-        "0.05",
+        "0.0",
     )
 )
 
-
-def choose_vad_threshold(
-    playback_seconds,
-    normal_threshold=VAD_THRESHOLD,
-    playback_threshold=PLAYBACK_VAD_THRESHOLD,
-    enabled=ECHO_GUARD_ENABLED,
-):
-    if (
-        enabled
-        and playback_seconds
-        > PLAYBACK_ACTIVE_SECONDS
-    ):
-        return max(
-            normal_threshold,
-            playback_threshold,
-        )
-
-    return normal_threshold
+ECHO_HANGOVER_SECONDS = float(
+    os.getenv(
+        "VAD_ECHO_HANGOVER_SECONDS",
+        "0.7",
+    )
+)
 
 
 def get_playback_seconds():
@@ -141,12 +139,19 @@ def get_playback_seconds():
         raw = audio_redis.get(
             PLAYBACK_BUFFER_SECONDS_KEY
         )
-
-        return (
+        playback_seconds = (
             float(raw)
             if raw is not None
             else 0.0
         )
+
+        if audio_redis.get(TTS_ACTIVE_KEY):
+            playback_seconds = max(
+                playback_seconds,
+                0.5,
+            )
+
+        return playback_seconds
 
     except (
         redis.exceptions.RedisError,
@@ -354,6 +359,11 @@ class PartialTranscriber:
                 f"| covered="
                 f"{len(audio) / SAMPLE_RATE:.2f}s"
             )
+            publish_event(
+                "partial",
+                text=text,
+                turn_id=version,
+            )
 
         except Exception as error:
             print(
@@ -472,6 +482,7 @@ def finalize_transcript(
 def transcription_loop(
     recordings,
     partial_transcriber,
+    echo_guard,
 ):
     while True:
         version, audio = recordings.get()
@@ -502,6 +513,17 @@ def transcription_loop(
                 print(
                     "[WHISPER] Eski konuşma "
                     "sonucu atlandı."
+                )
+                continue
+
+            if is_echo_transcript(
+                text,
+                recent_spoken_texts(),
+                playback_hot=echo_guard.is_hot(),
+            ):
+                print(
+                    "[ECHO FILTER] "
+                    f"kendi sesi atlandı | {text!r}"
                 )
                 continue
 
@@ -565,12 +587,20 @@ def main():
     partial_transcriber = (
         PartialTranscriber()
     )
+    echo_guard = EchoGuard(
+        hangover_seconds=ECHO_HANGOVER_SECONDS,
+        active_seconds=PLAYBACK_ACTIVE_SECONDS,
+        barge_in_threshold=PLAYBACK_VAD_THRESHOLD,
+        normal_threshold=VAD_THRESHOLD,
+        enabled=ECHO_GUARD_ENABLED,
+    )
 
     transcription_thread = threading.Thread(
         target=transcription_loop,
         args=(
             recordings,
             partial_transcriber,
+            echo_guard,
         ),
         daemon=True,
     )
@@ -634,25 +664,29 @@ def main():
         f"| silence={STT_ENDPOINT_SILENCE_MS}ms"
     )
 
-    with sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-        blocksize=vad.frame_samples,
-        callback=callback,
-    ):
+    try:
+        stream_context = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=vad.frame_samples,
+            callback=callback,
+        )
+    except Exception as error:
+        print("[WHISPER] Mikrofon açılamadı", error)
+        raise
+
+    with stream_context:
         while True:
             frame = audio_frames.get()
 
             playback_seconds = (
                 get_playback_seconds()
             )
-
-            new_threshold = (
-                choose_vad_threshold(
-                    playback_seconds
-                )
+            echo_guard.observe_playback(
+                playback_seconds
             )
+            new_threshold = echo_guard.threshold()
 
             guard_is_active = (
                 new_threshold
@@ -680,6 +714,18 @@ def main():
             )
 
             if event == "start":
+                if echo_guard.should_ignore_start(
+                    level
+                ):
+                    vad.reset()
+                    print(
+                        "[ECHO IGNORE] "
+                        f"rms={level:.4f} "
+                        f"| threshold="
+                        f"{new_threshold:.4f}"
+                    )
+                    continue
+
                 active_version = (
                     request_interrupt(
                         "speech-start"
@@ -696,6 +742,10 @@ def main():
                 print(
                     f"[VAD START] "
                     f"rms={level:.4f}"
+                )
+                publish_event(
+                    "listening",
+                    turn_id=active_version,
                 )
 
             elif (

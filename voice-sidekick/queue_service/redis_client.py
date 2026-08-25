@@ -28,3 +28,7 @@ PLAYBACK_BUFFER_SECONDS_KEY = (
     "voxcpm2_playback_buffer_seconds"
 )
 
+TTS_ACTIVE_KEY = (
+    "voice_sidekick_tts_active"
+)
+

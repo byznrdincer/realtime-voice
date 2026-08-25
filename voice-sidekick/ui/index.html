@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Oppy</title>
+  <style>
+    :root {
+      --bg: #12110f;
+      --panel: #1c1a17;
+      --ink: #f3eee6;
+      --muted: #9b9488;
+      --line: #2c2924;
+      --you: #3a342c;
+      --oppy: #24352c;
+      --accent: #d7b07a;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      max-width: 720px;
+      margin: 0 auto;
+      min-height: 100%;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 20px 22px 12px;
+    }
+    header .titles { flex: 1; }
+    .orb {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: #2a2620;
+      border: 1px solid var(--line);
+      position: relative;
+    }
+    .orb::after {
+      content: "";
+      position: absolute;
+      inset: 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      opacity: 0.35;
+    }
+    body.listening .orb::after,
+    body.speaking .orb::after {
+      animation: pulse 1.2s ease-in-out infinite;
+      opacity: 1;
+    }
+    body.thinking .orb::after { opacity: 0.7; }
+    @keyframes pulse {
+      0%, 100% { transform: scale(0.86); }
+      50% { transform: scale(1); }
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    #status {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #live {
+      min-height: 1.2em;
+      padding: 0 22px 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-style: italic;
+    }
+    #log {
+      flex: 1;
+      overflow: auto;
+      padding: 8px 22px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .msg {
+      max-width: 82%;
+      padding: 10px 13px;
+      border-radius: 14px;
+      white-space: pre-wrap;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: var(--you);
+    }
+    .msg.assistant {
+      align-self: flex-start;
+      background: var(--oppy);
+    }
+    form {
+      display: flex;
+      gap: 8px;
+      padding: 14px 22px 22px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
+    input {
+      flex: 1;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--ink);
+      border-radius: 10px;
+      padding: 11px 12px;
+      font: inherit;
+    }
+    button {
+      border: 0;
+      font-weight: 600;
+      border-radius: 10px;
+      padding: 0 16px;
+      cursor: pointer;
+      font: inherit;
+    }
+    button.send {
+      background: var(--accent);
+      color: #1a150f;
+    }
+    body.paused .orb::after { opacity: 0.15; }
+    button.listen-toggle {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 8px 14px;
+    }
+    button.listen-toggle:hover {
+      border-color: #8a4a3a;
+      color: #e8c4b8;
+    }
+    body.paused button.listen-toggle {
+      background: var(--accent);
+      color: #1a150f;
+      border-color: var(--accent);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="orb" aria-hidden="true"></div>
+    <div class="titles">
+      <h1>Oppy</h1>
+      <div id="status">Hazır — konuşabilirsin</div>
+    </div>
+    <button class="listen-toggle" id="listenToggle" type="button">Durdur</button>
+  </header>
+  <div id="live"></div>
+  <div id="log"></div>
+  <form id="composer">
+    <input id="text" autocomplete="off" placeholder="Yazarak da sorabilirsin" />
+    <button class="send" type="submit">Gönder</button>
+  </form>
+  <script>
+    const statusEl = document.getElementById("status");
+    const liveEl = document.getElementById("live");
+    const logEl = document.getElementById("log");
+    const form = document.getElementById("composer");
+    const input = document.getElementById("text");
+    const listenBtn = document.getElementById("listenToggle");
+    let assistantBubble = null;
+    let idleTimer = null;
+    let listening = true;
+
+    function setListening(active) {
+      listening = active;
+      listenBtn.textContent = active ? "Durdur" : "Dinle";
+      liveEl.textContent = "";
+      if (active) {
+        setMode("", "Hazır — konuşabilirsin");
+      } else {
+        setMode("paused", "Dinleme kapalı");
+      }
+    }
+
+    function setMode(mode, label) {
+      document.body.className = mode;
+      statusEl.textContent = label;
+    }
+
+    function addMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = "msg " + role;
+      div.textContent = text;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+      return div;
+    }
+
+    function scheduleIdle() {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (!listening) {
+          setMode("paused", "Dinleme kapalı");
+          return;
+        }
+        setMode("", "Hazır — konuşabilirsin");
+      }, 1600);
+    }
+
+    const events = new EventSource("/events");
+    events.onmessage = (event) => {
+      let data;
+      try { data = JSON.parse(event.data); } catch { return; }
+
+      if (data.type === "listening") {
+        if (!listening) return;
+        assistantBubble = null;
+        liveEl.textContent = "Dinliyorum…";
+        setMode("listening", "Dinliyor");
+      }
+      if (data.type === "partial" && data.text) {
+        liveEl.textContent = data.text;
+      }
+      if (data.type === "user" && data.text) {
+        liveEl.textContent = "";
+        addMessage("user", data.text);
+        setMode("thinking", "Düşünüyor");
+      }
+      if (data.type === "assistant_start") {
+        assistantBubble = addMessage("assistant", "");
+        setMode("thinking", "Düşünüyor");
+      }
+      if (data.type === "assistant_token" && data.text) {
+        if (!assistantBubble) assistantBubble = addMessage("assistant", "");
+        assistantBubble.textContent += data.text;
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      if (data.type === "assistant_done") {
+        if (data.text && !assistantBubble) addMessage("assistant", data.text);
+        assistantBubble = null;
+      }
+      if (data.type === "speaking") {
+        liveEl.textContent = "";
+        setMode("speaking", "Konuşuyor");
+        clearTimeout(idleTimer);
+      }
+      if (data.type === "tts_done") {
+        scheduleIdle();
+      }
+      if (data.type === "interrupted") {
+        if (!listening) return;
+        liveEl.textContent = "";
+        assistantBubble = null;
+        setMode("listening", "Sözün kesildi — dinliyorum");
+      }
+      if (data.type === "listen") {
+        setListening(Boolean(data.active));
+      }
+    };
+
+    listenBtn.addEventListener("click", async () => {
+      const path = listening ? "/api/pause" : "/api/resume";
+      listenBtn.disabled = true;
+      try {
+        const response = await fetch(path, { method: "POST" });
+        const payload = await response.json();
+        if (typeof payload.listening === "boolean") {
+          setListening(payload.listening);
+        }
+      } finally {
+        listenBtn.disabled = false;
+      }
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      await fetch("/api/say", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+    });
+  </script>
+</body>
+</html>

@@ -14,9 +14,12 @@ from queue_service.redis_client import (
     TEXT_QUEUE,
     VOXCPM2_AUDIO_QUEUE,
     PLAYBACK_BUFFER_SECONDS_KEY,
+    TTS_ACTIVE_KEY,
 )
 
 from tts.tts_normalizer import normalize_tts_text
+from stt.echo_guard import remember_spoken_text
+from queue_service.events import publish_event
 from queue_service.interrupt import (
     get_interrupt_version,
 )
@@ -163,7 +166,15 @@ def main():
         )
 
         text = normalize_tts_text(text)
-        # Ultimate Cloning referans ritmini kullanır
+        remember_spoken_text(text)
+        try:
+            audio_redis.set(
+                TTS_ACTIVE_KEY,
+                b"1",
+                ex=8,
+            )
+        except redis.exceptions.RedisError:
+            pass
 
         start = time.perf_counter()
         first_chunk_time = None
@@ -200,6 +211,10 @@ def main():
                             f"[FIRST AUDIO] "
                             f"{first_chunk_time - start:.3f}s"
                         )
+                        publish_event(
+                            "speaking",
+                            turn_id=turn_id,
+                        )
 
                     wait_for_playback_headroom()
 
@@ -217,6 +232,14 @@ def main():
                             audio_bytes,
                         ),
                     )
+                    try:
+                        audio_redis.set(
+                            TTS_ACTIVE_KEY,
+                            b"1",
+                            ex=8,
+                        )
+                    except redis.exceptions.RedisError:
+                        pass
 
                     total_bytes += len(audio_bytes)
                     chunk_count += 1
@@ -232,6 +255,16 @@ def main():
                         f"[TTS INTERRUPTED] "
                         f"version={turn_id}"
                     )
+                    publish_event(
+                        "interrupted",
+                        turn_id=turn_id,
+                    )
+                    try:
+                        audio_redis.delete(
+                            TTS_ACTIVE_KEY
+                        )
+                    except redis.exceptions.RedisError:
+                        pass
                     continue
 
                 pause_bytes = bytes(
@@ -267,6 +300,18 @@ def main():
                 f"| audio={audio_seconds:.3f}s "
                 f"| RTF={rtf:.3f}"
             )
+            publish_event(
+                "tts_done",
+                turn_id=turn_id,
+            )
+            try:
+                audio_redis.set(
+                    TTS_ACTIVE_KEY,
+                    b"1",
+                    ex=2,
+                )
+            except redis.exceptions.RedisError:
+                pass
 
         except Exception as error:
             print("[VOXCPM2 ERROR]", error)
