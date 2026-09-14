@@ -226,6 +226,10 @@ def main():
     workers = []
     listening = False
     listen_lock = threading.Lock()
+    stt_restart_attempts = 0
+    stt_restart_window_start = 0.0
+    STT_AUTO_RESTART_LIMIT = 3
+    STT_AUTO_RESTART_WINDOW_SECONDS = 30
 
     def start_stt():
         nonlocal stt_process, listening
@@ -271,6 +275,8 @@ def main():
 
     def mark_stt_down():
         nonlocal stt_process, listening
+        nonlocal stt_restart_attempts
+        nonlocal stt_restart_window_start
         with listen_lock:
             if not listening and stt_process is None:
                 return
@@ -280,6 +286,34 @@ def main():
             ]
             listening = False
         publish_event("listen", active=False)
+
+        # STT can die from a transient mic/device hiccup (e.g. a
+        # macOS CoreAudio glitch); retry a few times automatically
+        # before giving up and leaving it paused for a manual resume,
+        # so a one-off glitch doesn't silently strand the user.
+        now = time.time()
+        if (
+            now - stt_restart_window_start
+            > STT_AUTO_RESTART_WINDOW_SECONDS
+        ):
+            stt_restart_window_start = now
+            stt_restart_attempts = 0
+
+        if stt_restart_attempts >= STT_AUTO_RESTART_LIMIT:
+            print(
+                "[MAIN] STT otomatik yeniden başlatma "
+                "sınırına ulaşıldı, manuel devam gerekiyor."
+            )
+            return
+
+        stt_restart_attempts += 1
+        print(
+            "[MAIN] STT worker otomatik yeniden "
+            f"başlatılıyor | deneme={stt_restart_attempts}"
+        )
+        start_stt()
+        if listening:
+            publish_event("listen", active=True)
 
     def resume_listen():
         with listen_lock:
