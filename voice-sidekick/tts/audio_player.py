@@ -32,6 +32,16 @@ class ContinuousAudioPlayer:
 
         self.underrun_count = 0
 
+        # AEC far-end reference: exactly what this block sent to the
+        # speaker, timestamped. A separate thread (not this realtime
+        # callback) drains and publishes it to Redis for the STT
+        # process to align against its mic capture. deque append/
+        # popleft are atomic under the GIL, so this needs no lock
+        # even though it's written from the audio thread.
+        self.reference_chunks = deque(
+            maxlen=64
+        )
+
     def start(self):
 
         if self.stream is not None:
@@ -107,6 +117,10 @@ class ContinuousAudioPlayer:
                 filled += take
 
             outdata[:, 0] = output
+
+            self.reference_chunks.append(
+                (time.time(), output.copy())
+            )
 
         self.stream = sd.OutputStream(
             samplerate=self.sample_rate,

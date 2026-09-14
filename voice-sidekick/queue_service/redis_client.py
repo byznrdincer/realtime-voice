@@ -32,3 +32,11 @@ TTS_ACTIVE_KEY = (
     "voice_sidekick_tts_active"
 )
 
+# Redis Stream carrying the exact PCM samples the TTS audio player is
+# sending to the speaker (the AEC far-end/reference signal), so the
+# STT process (a separate OS process) can align and cancel echo from
+# its mic capture. See stt/aec.py.
+AEC_REFERENCE_STREAM_KEY = (
+    "voxcpm2_reference_pcm"
+)
+

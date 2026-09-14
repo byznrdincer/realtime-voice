@@ -30,6 +30,7 @@ from queue_service.redis_client import (
     PLAYBACK_BUFFER_SECONDS_KEY,
     TTS_ACTIVE_KEY,
 )
+from stt.aec import AcousticEchoCanceller
 from stt.echo_guard import (
     EchoGuard,
     is_echo_transcript,
@@ -145,6 +146,28 @@ VAD_BARGE_IN_CONFIRM_SECONDS = float(
         "350",
     )
 ) / 1000.0
+
+# Real acoustic echo cancellation (adaptive filter against the actual
+# TTS output), separate from and in addition to the RMS-threshold
+# echo guard above. Requires an acoustic + device delay estimate
+# (AEC_REFERENCE_DELAY_MS): the adaptive filter can absorb some
+# misalignment on its own (bounded by AEC_FILTER_LENGTH_SAMPLES /
+# SAMPLE_RATE of "reach"), but the base delay still needs calibrating
+# against real Mac hardware to get good cancellation.
+AEC_ENABLED = (
+    os.getenv("AEC_ENABLED", "true")
+    .strip()
+    .lower()
+    not in {"0", "false", "no", "off"}
+)
+AEC_REFERENCE_DELAY_MS = float(
+    os.getenv("AEC_REFERENCE_DELAY_MS", "180")
+)
+AEC_FILTER_LENGTH_SAMPLES = int(
+    os.getenv(
+        "AEC_FILTER_LENGTH_SAMPLES", "4096"
+    )
+)
 
 
 def get_playback_seconds():
@@ -639,6 +662,16 @@ def main():
         normal_threshold=VAD_THRESHOLD,
         enabled=ECHO_GUARD_ENABLED,
     )
+    aec = (
+        AcousticEchoCanceller(
+            sample_rate=SAMPLE_RATE,
+            frame_len=vad.frame_samples,
+            filter_length=AEC_FILTER_LENGTH_SAMPLES,
+            delay_ms=AEC_REFERENCE_DELAY_MS,
+        )
+        if AEC_ENABLED
+        else None
+    )
 
     transcription_thread = threading.Thread(
         target=transcription_loop,
@@ -694,7 +727,10 @@ def main():
 
         try:
             audio_frames.put_nowait(
-                indata[:, 0].copy()
+                (
+                    time.time(),
+                    indata[:, 0].copy(),
+                )
             )
         except queue.Full:
             print("[MIC] Frame kuyruğu doldu.")
@@ -721,6 +757,21 @@ def main():
         f"barge_in_threshold={PLAYBACK_VAD_THRESHOLD:.4f} "
         f"| confirm_after={VAD_BARGE_IN_CONFIRM_SECONDS:.2f}s"
     )
+    if aec is not None and aec.enabled:
+        print(
+            "[AEC] aktif "
+            f"| delay={AEC_REFERENCE_DELAY_MS:.0f}ms "
+            f"| filter_length={AEC_FILTER_LENGTH_SAMPLES} "
+            f"samples"
+        )
+    elif AEC_ENABLED:
+        print(
+            "[AEC] pasif | pyaec kütüphanesi "
+            "yüklenemedi, mikrofon işlenmemiş "
+            "geçecek"
+        )
+    else:
+        print("[AEC] pasif (AEC_ENABLED=false)")
 
     try:
         stream_context = sd.InputStream(
@@ -734,9 +785,29 @@ def main():
         print("[WHISPER] Mikrofon açılamadı", error)
         raise
 
+    aec_active_logged = False
+
     with stream_context:
         while True:
-            frame = audio_frames.get()
+            frame_time, frame = (
+                audio_frames.get()
+            )
+
+            if aec is not None:
+                frame, aec_applied = (
+                    aec.process(
+                        frame, frame_time
+                    )
+                )
+
+                if aec_applied != aec_active_logged:
+                    aec_active_logged = aec_applied
+                    print(
+                        "[AEC] "
+                        f"{'uygulanıyor' if aec_applied else 'referans yok, atlanıyor'} "
+                        f"| applied={aec.applied_count} "
+                        f"skipped={aec.skipped_count}"
+                    )
 
             playback_seconds = (
                 get_playback_seconds()

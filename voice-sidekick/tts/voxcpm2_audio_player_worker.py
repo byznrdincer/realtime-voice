@@ -1,6 +1,8 @@
+import os
 import threading
 import time
 
+import numpy as np
 import redis
 
 from queue_service.messages import (
@@ -10,6 +12,7 @@ from queue_service.redis_client import (
     audio_redis,
     VOXCPM2_AUDIO_QUEUE,
     PLAYBACK_BUFFER_SECONDS_KEY,
+    AEC_REFERENCE_STREAM_KEY,
 )
 from tts.audio_player import ContinuousAudioPlayer
 from queue_service.interrupt import (
@@ -19,6 +22,13 @@ from queue_service.worker_signals import (
     install_clean_shutdown,
 )
 
+
+AEC_ENABLED = (
+    os.getenv("AEC_ENABLED", "true")
+    .strip()
+    .lower()
+    not in {"0", "false", "no", "off"}
+)
 
 
 install_clean_shutdown()
@@ -100,6 +110,46 @@ def publish_buffer_level():
         time.sleep(0.02)
 
 
+def publish_reference_audio():
+    """Drain the player's AEC reference deque (filled from the
+    realtime audio callback) into a Redis stream so the STT process
+    can align it against mic capture and cancel echo. Kept off the
+    audio thread entirely; only this background thread talks to
+    Redis.
+    """
+
+    while True:
+        try:
+            while player.reference_chunks:
+                ts, samples = (
+                    player.reference_chunks
+                    .popleft()
+                )
+
+                pcm16 = (
+                    np.clip(samples, -1.0, 1.0)
+                    * 32767
+                ).astype("<i2").tobytes()
+
+                audio_redis.xadd(
+                    AEC_REFERENCE_STREAM_KEY,
+                    {
+                        "ts": repr(ts),
+                        "pcm": pcm16,
+                    },
+                    maxlen=200,
+                    approximate=True,
+                )
+
+        except redis.exceptions.RedisError as error:
+            print(
+                "[REDIS ERROR] reference publish:",
+                error,
+            )
+
+        time.sleep(0.02)
+
+
 buffer_thread = threading.Thread(
     target=publish_buffer_level,
     daemon=True,
@@ -113,6 +163,16 @@ interrupt_thread = threading.Thread(
 )
 
 interrupt_thread.start()
+
+if AEC_ENABLED:
+    reference_thread = threading.Thread(
+        target=publish_reference_audio,
+        daemon=True,
+    )
+    reference_thread.start()
+    print("[AEC] referans yayını aktif")
+else:
+    print("[AEC] pasif (AEC_ENABLED=false)")
 
 
 while True:
