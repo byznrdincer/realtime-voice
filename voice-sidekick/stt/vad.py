@@ -10,6 +10,7 @@ class EnergyVAD:
         sample_rate=48000,
         frame_ms=30,
         threshold=0.015,
+        start_threshold=None,
         start_ms=120,
         end_ms=700,
         pre_roll_ms=300,
@@ -18,6 +19,15 @@ class EnergyVAD:
         self.sample_rate = sample_rate
         self.frame_ms = frame_ms
         self.threshold = threshold
+        # Separate gate for the not-yet-active (pre-start) phase so a
+        # caller can keep speech onset sensitive to quieter voices while
+        # still using a stricter `threshold` for in-progress endpointing.
+        # Defaults to `threshold` to preserve old single-threshold behavior.
+        self.start_threshold = (
+            threshold
+            if start_threshold is None
+            else start_threshold
+        )
         self.end_ms = end_ms
 
         self.frame_samples = int(
@@ -96,14 +106,13 @@ class EnergyVAD:
         ).reshape(-1)
 
         level = self.rms(frame)
-        voiced = level >= self.threshold
 
         if not self.active:
             self.pre_roll.append(
                 frame.copy()
             )
 
-            if voiced:
+            if level >= self.start_threshold:
                 self.speech_run += 1
             else:
                 self.speech_run = 0
@@ -131,7 +140,7 @@ class EnergyVAD:
         )
         self.active_frames += 1
 
-        if voiced:
+        if level >= self.threshold:
             self.silence_run = 0
         else:
             self.silence_run += 1

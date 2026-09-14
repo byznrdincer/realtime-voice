@@ -6,6 +6,7 @@ from stt.echo_guard import (
     is_echo_transcript,
     normalize_echo_text,
 )
+from stt.whisper_worker import classify_speech_onset
 
 
 class VADEchoGuardTests(unittest.TestCase):
@@ -175,6 +176,59 @@ class EchoTranscriptTests(unittest.TestCase):
         self.assertEqual(
             normalize_echo_text("Merhaba!"),
             "merhaba",
+        )
+
+
+class ClassifySpeechOnsetTests(unittest.TestCase):
+
+    def test_idle_speech_confirms_immediately(self):
+        self.assertEqual(
+            classify_speech_onset(
+                is_hot=False,
+                level=0.02,
+                threshold=0.10,
+                candidate_elapsed=0.0,
+                confirm_seconds=0.35,
+            ),
+            "confirm",
+        )
+
+    def test_loud_speech_during_playback_confirms_immediately(self):
+        self.assertEqual(
+            classify_speech_onset(
+                is_hot=True,
+                level=0.14,
+                threshold=0.10,
+                candidate_elapsed=0.0,
+                confirm_seconds=0.35,
+            ),
+            "confirm",
+        )
+
+    def test_quiet_speech_during_playback_is_only_a_candidate_at_first(
+        self,
+    ):
+        self.assertEqual(
+            classify_speech_onset(
+                is_hot=True,
+                level=0.04,
+                threshold=0.10,
+                candidate_elapsed=0.0,
+                confirm_seconds=0.35,
+            ),
+            "candidate",
+        )
+
+    def test_sustained_quiet_speech_confirms_after_window(self):
+        self.assertEqual(
+            classify_speech_onset(
+                is_hot=True,
+                level=0.04,
+                threshold=0.10,
+                candidate_elapsed=0.40,
+                confirm_seconds=0.35,
+            ),
+            "confirm",
         )
 
 

@@ -133,6 +133,19 @@ ECHO_HANGOVER_SECONDS = float(
     )
 )
 
+# Minimum sustained duration a sub-barge-in-threshold voice must hold
+# during TTS playback before it is trusted as real user speech instead
+# of TTS bleed. See the candidate/confirm barge-in logic in main().
+# Must stay below VAD_END_MS (default 700ms): a candidate is watched
+# using the elevated echo threshold, so it needs to confirm before
+# VAD's own silence timeout would otherwise kill it as "end".
+VAD_BARGE_IN_CONFIRM_SECONDS = float(
+    os.getenv(
+        "VAD_BARGE_IN_CONFIRM_MS",
+        "350",
+    )
+) / 1000.0
+
 
 def get_playback_seconds():
     try:
@@ -257,6 +270,37 @@ def merge_transcripts(prefix, tail):
             ).strip()
 
     return None
+
+
+def classify_speech_onset(
+    is_hot,
+    level,
+    threshold,
+    candidate_elapsed,
+    confirm_seconds,
+):
+    """Decide what to do with a detected (or continuing) speech onset.
+
+    Returns "confirm" (treat as a real user turn now), or "candidate"
+    (not yet trustworthy while TTS is playing; keep watching).
+
+    Idle (not hot) speech always confirms immediately, unchanged from
+    prior behavior. During hot/playback state, a level that already
+    clears the echo-defense threshold confirms immediately (fast
+    path, same as before). A quieter level is trusted only once it
+    has sustained for `confirm_seconds` without dropping to silence,
+    to reduce the chance a brief TTS bleed blip counts as barge-in.
+    """
+    if not is_hot:
+        return "confirm"
+
+    if level >= threshold:
+        return "confirm"
+
+    if candidate_elapsed >= confirm_seconds:
+        return "confirm"
+
+    return "candidate"
 
 
 def remaining_audio_is_silence(
@@ -577,6 +621,7 @@ def main():
     vad = EnergyVAD(
         sample_rate=SAMPLE_RATE,
         threshold=VAD_THRESHOLD,
+        start_threshold=VAD_THRESHOLD,
         end_ms=VAD_END_MS,
     )
 
@@ -608,6 +653,14 @@ def main():
 
     active_version = None
     echo_guard_active = False
+    # A "candidate" is a VAD-detected onset that happened during hot
+    # (TTS playback) state below the barge-in confirm threshold. It is
+    # not yet treated as a real turn (no interrupt/version bump) until
+    # it either gets loud enough or sustains long enough to be trusted
+    # as real user speech rather than TTS bleed-through.
+    pending_candidate = False
+    candidate_started_at = 0.0
+    candidate_peak_level = 0.0
     partial_interval_samples = max(
         1,
         int(
@@ -663,6 +716,11 @@ def main():
         f"{'aktif' if STT_ENDPOINT_PRECOMPUTE_ENABLED else 'pasif'} "
         f"| silence={STT_ENDPOINT_SILENCE_MS}ms"
     )
+    print(
+        "[VAD BARGE-IN CONFIG] "
+        f"barge_in_threshold={PLAYBACK_VAD_THRESHOLD:.4f} "
+        f"| confirm_after={VAD_BARGE_IN_CONFIRM_SECONDS:.2f}s"
+    )
 
     try:
         stream_context = sd.InputStream(
@@ -686,7 +744,16 @@ def main():
             echo_guard.observe_playback(
                 playback_seconds
             )
-            new_threshold = echo_guard.threshold()
+
+            if active_version is not None:
+                # A turn is already confirmed as real user speech;
+                # keep endpoint/silence detection at normal
+                # sensitivity so the elevated echo-defense threshold
+                # can't clip the user's own (possibly moderate
+                # volume) speech mid-turn.
+                new_threshold = VAD_THRESHOLD
+            else:
+                new_threshold = echo_guard.threshold()
 
             guard_is_active = (
                 new_threshold
@@ -714,18 +781,39 @@ def main():
             )
 
             if event == "start":
-                if echo_guard.should_ignore_start(
-                    level
-                ):
-                    vad.reset()
+                is_hot = echo_guard.is_hot()
+                onset = classify_speech_onset(
+                    is_hot,
+                    level,
+                    new_threshold,
+                    0.0,
+                    VAD_BARGE_IN_CONFIRM_SECONDS,
+                )
+
+                if onset == "candidate":
+                    # Onset is real (crossed the normal VAD gate) but
+                    # still under the echo-defense threshold while TTS
+                    # is playing. Don't commit yet: watch it for a
+                    # short confirm window instead of either accepting
+                    # it outright (self-interrupt risk) or discarding
+                    # it outright (missed barge-in risk).
+                    pending_candidate = True
+                    candidate_started_at = (
+                        time.monotonic()
+                    )
+                    candidate_peak_level = level
+
                     print(
-                        "[ECHO IGNORE] "
-                        f"rms={level:.4f} "
-                        f"| threshold="
-                        f"{new_threshold:.4f}"
+                        "[VAD BARGE-IN] "
+                        f"playback=true rms={level:.4f} "
+                        f"threshold={new_threshold:.4f} "
+                        f"decision=CANDIDATE "
+                        f"confirm_after="
+                        f"{VAD_BARGE_IN_CONFIRM_SECONDS:.2f}s"
                     )
                     continue
 
+                pending_candidate = False
                 active_version = (
                     request_interrupt(
                         "speech-start"
@@ -739,14 +827,87 @@ def main():
                 )
                 endpoint_candidate_scheduled = False
 
-                print(
-                    f"[VAD START] "
-                    f"rms={level:.4f}"
-                )
+                if is_hot:
+                    print(
+                        "[VAD BARGE-IN] "
+                        f"playback=true rms={level:.4f} "
+                        f"threshold={new_threshold:.4f} "
+                        f"decision=USER_SPEECH "
+                        f"confirm=loud elapsed=0.00s"
+                    )
+                else:
+                    print(
+                        f"[VAD START] "
+                        f"rms={level:.4f}"
+                    )
                 publish_event(
                     "listening",
                     turn_id=active_version,
                 )
+
+            elif (
+                event == "speech"
+                and pending_candidate
+            ):
+                candidate_peak_level = max(
+                    candidate_peak_level,
+                    level,
+                )
+                elapsed = (
+                    time.monotonic()
+                    - candidate_started_at
+                )
+                onset = classify_speech_onset(
+                    echo_guard.is_hot(),
+                    level,
+                    new_threshold,
+                    elapsed,
+                    VAD_BARGE_IN_CONFIRM_SECONDS,
+                )
+
+                if onset == "confirm":
+                    confirm_reason = (
+                        "loud"
+                        if level >= new_threshold
+                        else "sustained"
+                    )
+                    pending_candidate = False
+                    active_version = (
+                        request_interrupt(
+                            "speech-start"
+                        )
+                    )
+                    partial_transcriber.begin(
+                        active_version
+                    )
+
+                    active_audio = (
+                        vad.get_active_audio()
+                    )
+                    covered_now = (
+                        len(active_audio)
+                        if active_audio
+                        is not None
+                        else 0
+                    )
+                    next_partial_samples = (
+                        covered_now
+                        + partial_interval_samples
+                    )
+                    endpoint_candidate_scheduled = False
+
+                    print(
+                        "[VAD BARGE-IN] "
+                        f"playback=true rms={level:.4f} "
+                        f"threshold={new_threshold:.4f} "
+                        f"decision=USER_SPEECH "
+                        f"confirm={confirm_reason} "
+                        f"elapsed={elapsed:.2f}s"
+                    )
+                    publish_event(
+                        "listening",
+                        turn_id=active_version,
+                    )
 
             elif (
                 event == "speech"
@@ -816,10 +977,24 @@ def main():
                     len(audio) / SAMPLE_RATE
                 )
 
-                print(
-                    f"[VAD END] "
-                    f"audio={duration:.2f}s"
-                )
+                if pending_candidate:
+                    # Never confirmed: VAD's own silence timeout
+                    # fired first, so this was a brief blip (echo or
+                    # noise), not sustained/loud enough user speech.
+                    pending_candidate = False
+                    print(
+                        "[ECHO GUARD] "
+                        f"playback=true "
+                        f"rms={candidate_peak_level:.4f} "
+                        f"threshold={new_threshold:.4f} "
+                        f"decision=IGNORE reason=timeout "
+                        f"audio={duration:.2f}s"
+                    )
+                else:
+                    print(
+                        f"[VAD END] "
+                        f"audio={duration:.2f}s"
+                    )
 
                 if active_version is not None:
                     recordings.put(
