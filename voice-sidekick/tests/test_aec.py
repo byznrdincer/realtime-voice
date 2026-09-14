@@ -122,6 +122,65 @@ class AcousticEchoCancellerTests(unittest.TestCase):
         self.assertFalse(applied)
         np.testing.assert_array_equal(clean, frame)
 
+    def test_silent_reference_does_not_attenuate_real_voice(
+        self,
+    ):
+        # Regression test: running pyaec against a near-silent
+        # reference is a degenerate case for this filter -- it can
+        # aggressively attenuate stationary/tonal mic content (which
+        # includes voiced speech) even though there's no real echo to
+        # cancel. AcousticEchoCanceller must treat a near-silent
+        # reference the same as "no reference" and pass the frame
+        # through untouched instead of feeding it to the filter.
+        sample_rate = 16000
+        frame_len = 256
+
+        with patch(
+            "stt.aec.audio_redis"
+        ) as mock_redis:
+            mock_redis.xrevrange.return_value = []
+            aec = AcousticEchoCanceller(
+                sample_rate=sample_rate,
+                frame_len=frame_len,
+                filter_length=1024,
+                delay_ms=0,
+            )
+
+        if not aec.enabled:
+            self.skipTest("pyaec not available")
+
+        base_time = 2000.0
+        samples = frame_len * 10
+        # A sustained tone, standing in for a voiced speech segment.
+        voice = (
+            0.05
+            * np.sin(
+                2
+                * np.pi
+                * 220
+                * np.arange(samples)
+                / sample_rate
+            )
+        ).astype(np.float32)
+
+        silence = np.zeros(samples, dtype=np.int16)
+        aec.reference._chunks.append(
+            (base_time, silence)
+        )
+        aec.reference.ingest_new = lambda: None
+
+        for i in range(0, samples - frame_len, frame_len):
+            frame = voice[i:i + frame_len]
+            frame_time = (
+                base_time + i / sample_rate
+            )
+            clean, applied = aec.process(
+                frame, frame_time
+            )
+
+            self.assertFalse(applied)
+            np.testing.assert_array_equal(clean, frame)
+
     def test_cancels_aligned_echo(self):
         sample_rate = 16000
         frame_len = 256

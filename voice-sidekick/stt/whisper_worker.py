@@ -793,7 +793,20 @@ def main():
                 audio_frames.get()
             )
 
-            if aec is not None:
+            playback_seconds = (
+                get_playback_seconds()
+            )
+            echo_guard.observe_playback(
+                playback_seconds
+            )
+
+            if aec is not None and echo_guard.is_hot():
+                # Only run the adaptive filter while TTS is actually
+                # (or was just) playing. Running it against a
+                # near-silent reference is a degenerate case for this
+                # filter: it can end up aggressively attenuating any
+                # stationary/tonal content in the mic signal (which
+                # includes voiced speech), not just genuine echo.
                 frame, aec_applied = (
                     aec.process(
                         frame, frame_time
@@ -808,13 +821,12 @@ def main():
                         f"| applied={aec.applied_count} "
                         f"skipped={aec.skipped_count}"
                     )
-
-            playback_seconds = (
-                get_playback_seconds()
-            )
-            echo_guard.observe_playback(
-                playback_seconds
-            )
+            elif aec_active_logged:
+                aec_active_logged = False
+                print(
+                    "[AEC] pasif | playback yok, "
+                    "mikrofon işlenmemiş geçiyor"
+                )
 
             if active_version is not None:
                 # A turn is already confirmed as real user speech;

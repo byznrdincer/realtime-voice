@@ -15,6 +15,17 @@ except ImportError:
     Aec = None
 
 
+# Below this int16-scale RMS, treat the reference as "no real
+# playback" rather than feeding it to the filter. Running the
+# adaptive filter against a near-silent reference is a degenerate
+# case for this library: it can end up aggressively attenuating any
+# stationary/tonal content in the mic signal (which includes voiced
+# speech), not just genuine echo, even though there's nothing to
+# actually cancel. Measured empirically: ~50 safely separates true
+# silence from an audibly present (even quiet) TTS tail at 48kHz.
+MIN_REFERENCE_RMS = 50.0
+
+
 class ReferenceBuffer:
     """Tracks recently-played TTS audio (the AEC far-end/reference
     signal), received from the audio player process over a Redis
@@ -221,6 +232,18 @@ class AcousticEchoCanceller:
         )
 
         if reference is None:
+            self.skipped_count += 1
+            return frame, False
+
+        reference_rms = float(
+            np.sqrt(
+                np.mean(
+                    reference.astype(np.float64) ** 2
+                )
+            )
+        )
+
+        if reference_rms < MIN_REFERENCE_RMS:
             self.skipped_count += 1
             return frame, False
 
